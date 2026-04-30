@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Adaptive API Rate Limiter</title>
+  <meta
+    name="description"
+    content="A user-friendly frontend for testing and managing the Adaptive API Rate Limiter backend."
+  />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="page-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark"><i class="bi bi-shield-check"></i></div>
+        <div>
+          <p class="eyebrow">Frontend Console</p>
+          <h1>Rate Limiter UI</h1>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="#overview" class="nav-link active" data-section="overview">Overview</a>
+        <a href="#request-lab" class="nav-link" data-section="request-lab">Request Lab</a>
+        <a href="#client-insights" class="nav-link" data-section="client-insights">Client Insights</a>
+        <a href="#admin-tools" class="nav-link" data-section="admin-tools">Admin Tools</a>
+        <a href="#api-guide" class="nav-link" data-section="api-guide">API Guide</a>
+      </nav>
+
+      <div class="sidebar-note">
+        <p>Backend is unchanged. This UI only talks to the existing endpoints.</p>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <button class="menu-btn" id="menuBtn" aria-label="Toggle menu">
+          <i class="bi bi-list"></i>
+        </button>
+        <div>
+          <p class="eyebrow">Adaptive API Rate Limiter</p>
+          <h2 id="pageTitle">Overview</h2>
+        </div>
+        <div class="topbar-status" id="serverBadge">
+          <span class="status-dot"></span>
+          <span id="serverBadgeText">Checking backend</span>
+        </div>
+      </header>
+
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Connect your application faster</p>
+          <h3>Test the backend, inspect one client, and manage API keys from one clean frontend.</h3>
+          <p>
+            This interface is wired to the real backend routes: <code>/api/hello</code>,
+            <code>/admin/stats</code>, <code>/admin/generate-key</code>, and
+            <code>/admin/revoke-key</code>.
+          </p>
+        </div>
+        <div class="hero-tips">
+          <div class="tip-card">
+            <span>1</span>
+            <p>Set the backend URL and connect.</p>
+          </div>
+          <div class="tip-card">
+            <span>2</span>
+            <p>Generate an API key for predictable client tracking.</p>
+          </div>
+          <div class="tip-card">
+            <span>3</span>
+            <p>Use Request Lab to test real rate-limit behavior.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="overview" class="section-block active">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Connection</p>
+            <h3>Overview</h3>
+          </div>
+          <button class="ghost-btn" id="refreshOverviewBtn">
+            <i class="bi bi-arrow-repeat"></i>
+            Refresh
+          </button>
+        </div>
+
+        <div class="grid two">
+          <article class="card card-xl">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Backend Setup</p>
+                <h4>Connect this frontend to your running API</h4>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <label class="field">
+                <span>Backend Base URL</span>
+                <input id="baseUrl" type="text" placeholder="http://localhost:8080" />
+              </label>
+              <label class="field">
+                <span>Client Name for API Key</span>
+                <input id="clientName" type="text" placeholder="inventory-service" />
+              </label>
+              <label class="field">
+                <span>API Key to Use in Requests</span>
+                <input id="apiKeyInput" type="text" placeholder="rl-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
+              </label>
+              <label class="field">
+                <span>Client ID for Stats Lookup</span>
+                <input id="statsClientId" type="text" placeholder="Paste API key here for tracked stats" />
+              </label>
+            </div>
+
+            <div class="button-row">
+              <button class="primary-btn" id="connectBtn">
+                <i class="bi bi-plug"></i>
+                Connect
+              </button>
+              <button class="secondary-btn" id="useGeneratedKeyBtn">
+                <i class="bi bi-key"></i>
+                Use Last Generated Key
+              </button>
+            </div>
+
+            <div class="inline-note" id="connectHint">
+              If you do not send <code>X-API-Key</code>, the backend falls back to IP-based limiting.
+            </div>
+          </article>
+
+          <article class="card highlight-card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Live Summary</p>
+                <h4>Current session</h4>
+              </div>
+            </div>
+
+            <div class="stat-grid">
+              <div class="stat-box">
+                <span>Total Requests</span>
+                <strong id="summaryRequests">0</strong>
+              </div>
+              <div class="stat-box">
+                <span>Successful</span>
+                <strong id="summarySuccess">0</strong>
+              </div>
+              <div class="stat-box">
+                <span>Blocked</span>
+                <strong id="summaryBlocked">0</strong>
+              </div>
+              <div class="stat-box">
+                <span>Last Status</span>
+                <strong id="summaryLastStatus">Idle</strong>
+              </div>
+            </div>
+
+            <canvas id="sessionChart" height="190"></canvas>
+          </article>
+        </div>
+      </section>
+
+      <section id="request-lab" class="section-block">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Testing</p>
+            <h3>Request Lab</h3>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Request Builder</p>
+                <h4>Send real requests to the backend</h4>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <label class="field">
+                <span>Preset Endpoint</span>
+                <select id="endpointPreset">
+                  <option value="hello">GET /api/hello</option>
+                  <option value="stats">GET /admin/stats?clientId=...</option>
+                  <option value="generate">POST /admin/generate-key?clientName=...</option>
+                  <option value="revoke">DELETE /admin/revoke-key?apiKey=...</option>
+                  <option value="custom">Custom Request</option>
+                </select>
+              </label>
+              <label class="field" id="customMethodField">
+                <span>Custom Method</span>
+                <select id="customMethod">
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                  <option value="DELETE">DELETE</option>
+                </select>
+              </label>
+              <label class="field field-wide" id="customPathField">
+                <span>Custom Path</span>
+                <input id="customPath" type="text" placeholder="/api/hello" />
+              </label>
+              <label class="field">
+                <span>Burst Count</span>
+                <input id="burstCount" type="number" min="1" max="25" value="5" />
+              </label>
+            </div>
+
+            <div class="button-row">
+              <button class="primary-btn" id="sendRequestBtn">
+                <i class="bi bi-send"></i>
+                Send Request
+              </button>
+              <button class="secondary-btn" id="sendBurstBtn">
+                <i class="bi bi-lightning-charge"></i>
+                Send Burst
+              </button>
+              <button class="ghost-btn" id="clearLogBtn">
+                <i class="bi bi-trash"></i>
+                Clear Log
+              </button>
+            </div>
+
+            <div class="request-meta" id="requestMeta"></div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Response</p>
+                <h4>Activity log and latest payload</h4>
+              </div>
+            </div>
+
+            <div class="console" id="activityLog">
+              <div class="empty-state">Your request history will appear here.</div>
+            </div>
+
+            <div class="payload-view">
+              <div class="payload-head">
+                <span>Latest Response Body</span>
+                <span id="payloadStatus">No response yet</span>
+              </div>
+              <pre id="responsePreview">Waiting for a request...</pre>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="client-insights" class="section-block">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Monitoring</p>
+            <h3>Client Insights</h3>
+          </div>
+          <button class="ghost-btn" id="fetchStatsBtn">
+            <i class="bi bi-graph-up-arrow"></i>
+            Fetch Stats
+          </button>
+        </div>
+
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Backend Stats</p>
+                <h4>Inspect one tracked client</h4>
+              </div>
+            </div>
+
+            <div class="inline-note">
+              Best result: generate a key, use it in requests, then fetch stats with that same key as the client ID.
+            </div>
+
+            <div class="stats-grid" id="statsGrid">
+              <div class="stat-panel"><span>Client ID</span><strong id="statsClientValue">-</strong></div>
+              <div class="stat-panel"><span>Live Tokens</span><strong id="statsTokens">-</strong></div>
+              <div class="stat-panel"><span>Refill Rate</span><strong id="statsRefill">-</strong></div>
+              <div class="stat-panel"><span>Base Refill</span><strong id="statsBaseRefill">-</strong></div>
+              <div class="stat-panel"><span>Total Requests</span><strong id="statsTotal">-</strong></div>
+              <div class="stat-panel"><span>Rejected Requests</span><strong id="statsRejected">-</strong></div>
+              <div class="stat-panel"><span>Clean Windows</span><strong id="statsClean">-</strong></div>
+              <div class="stat-panel"><span>Checked At</span><strong id="statsCheckedAt">-</strong></div>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Timeline</p>
+                <h4>Recent stats snapshots</h4>
+              </div>
+            </div>
+            <canvas id="tokensChart" height="220"></canvas>
+          </article>
+        </div>
+      </section>
+
+      <section id="admin-tools" class="section-block">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Management</p>
+            <h3>Admin Tools</h3>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Generate API Key</p>
+                <h4>Create a reusable client identity</h4>
+              </div>
+            </div>
+
+            <div class="button-row">
+              <button class="primary-btn" id="generateKeyBtn">
+                <i class="bi bi-key-fill"></i>
+                Generate Key
+              </button>
+            </div>
+
+            <div class="result-panel">
+              <span>Last generated key</span>
+              <strong id="generatedKeyValue">Not generated yet</strong>
+              <p id="generatedKeyMessage">Create a key to use consistent client tracking across requests.</p>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Revoke API Key</p>
+                <h4>Disable a client key</h4>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>API Key to Revoke</span>
+              <input id="revokeKeyInput" type="text" placeholder="Paste a key to revoke" />
+            </label>
+
+            <div class="button-row">
+              <button class="danger-btn" id="revokeKeyBtn">
+                <i class="bi bi-x-octagon"></i>
+                Revoke Key
+              </button>
+            </div>
+
+            <div class="result-panel warning">
+              <span>Revoke result</span>
+              <strong id="revokeMessage">No revoke action yet</strong>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="api-guide" class="section-block">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Reference</p>
+            <h3>API Guide</h3>
+          </div>
+        </div>
+
+        <div class="guide-grid">
+          <article class="guide-card">
+            <span class="method get">GET</span>
+            <h4>/api/hello</h4>
+            <p>Basic test endpoint that passes through the rate-limit filter.</p>
+          </article>
+          <article class="guide-card">
+            <span class="method get">GET</span>
+            <h4>/admin/stats?clientId=...</h4>
+            <p>Returns rate-limit stats for one known client ID.</p>
+          </article>
+          <article class="guide-card">
+            <span class="method post">POST</span>
+            <h4>/admin/generate-key?clientName=...</h4>
+            <p>Creates a new API key and maps it to the provided client name.</p>
+          </article>
+          <article class="guide-card">
+            <span class="method delete">DELETE</span>
+            <h4>/admin/revoke-key?apiKey=...</h4>
+            <p>Revokes an existing API key.</p>
+          </article>
+        </div>
+
+        <article class="card">
+          <div class="card-head">
+            <div>
+              <p class="eyebrow">Headers</p>
+              <h4>How this frontend talks to the backend</h4>
+            </div>
+          </div>
+
+          <pre class="code-card">Optional header for tracked clients:
+X-API-Key: rl-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+If X-API-Key is missing or invalid:
+the backend identifies the client by IP address.
+
+Recommended integration flow:
+1. Generate an API key
+2. Use that key in your application requests
+3. Query /admin/stats with that same key as clientId</pre>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
