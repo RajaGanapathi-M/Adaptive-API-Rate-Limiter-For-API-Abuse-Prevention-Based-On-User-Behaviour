@@ -7,46 +7,58 @@
 ## 📌 Table of Contents
 
 - [Overview](#overview)
-- [Features](#features)
-- [Architecture](#architecture)
+- [Key Features](#key-features)
+- [Architecture & Request Flow](#architecture--request-flow)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
 - [How It Works](#how-it-works)
-- [API Endpoints](#api-endpoints)
-- [Configuration](#configuration)
-- [Getting Started](#getting-started)
+  - [Token Bucket Algorithm](#token-bucket-algorithm)
+  - [Adaptive Mechanics (Penalty & Recovery)](#adaptive-mechanics-penalty--recovery)
+- [How to Run This Project](#how-to-run-this-project)
   - [Prerequisites](#prerequisites)
-  - [Run with Docker (Recommended)](#run-with-docker-recommended)
-  - [Run Locally](#run-locally)
+  - [Method 1: Run Locally on Windows (Current Setup)](#method-1-run-locally-on-windows-current-setup)
+  - [Method 2: Run Locally on Linux / macOS](#method-2-run-locally-on-linux--macos)
+  - [Method 3: Run with Docker Compose](#method-3-run-with-docker-compose)
 - [Web Dashboard](#web-dashboard)
-- [License](#license)
+- [API Endpoints & Testing](#api-endpoints--testing)
+  - [1. Public Rate-Limited Endpoint](#1-public-rate-limited-endpoint)
+  - [2. Generate API Key](#2-generate-api-key)
+  - [3. Fetch Live Stats](#3-fetch-live-stats)
+  - [4. Revoke API Key](#4-revoke-api-key)
+- [Configuration Reference](#configuration-reference)
+- [Troubleshooting & FAQ](#troubleshooting--faq)
+- [License & Credits](#license--credits)
 
 ---
 
 ## Overview
 
-The **Adaptive API Rate Limiter** is a final-year engineering project that demonstrates a smarter approach to API abuse prevention. Instead of a static "N requests per minute" rule, this system continuously evaluates each client's behaviour window-by-window and **penalises abusers** by reducing their token refill rate, while **rewarding well-behaved clients** by gradually restoring it.
+Traditional rate limiters enforce a rigid, static rule (e.g., *"100 requests per minute"* for everyone). This fails to differentiate between legitimate high-traffic bursts and abusive scrapers or brute-force attacks.
 
-Clients are identified either by their **API Key** (registered clients) or by their **IP address** (anonymous requests). All state is persisted in **Redis**, making the system horizontally scalable.
+The **Adaptive API Rate Limiter** addresses this by continuously observing client traffic window-by-window:
+- **Abusive clients** that trigger 429 errors are progressively penalized with a reduced refill rate.
+- **Well-behaved clients** that maintain clean request streams have their original rate gradually restored.
+- Clients are identified by **API Key** (`X-API-Key` header) or automatically tracked by their **IP Address** when unauthenticated.
+- All client states and token buckets are persisted in **Redis**, ensuring fast performance and horizontal scalability.
 
 ---
 
-## Features
+## Key Features
 
 | Feature | Description |
 |---|---|
-| 🪣 **Token Bucket Algorithm** | Classic, smooth rate limiting with per-client token pools |
-| 🧠 **Adaptive Rate Adjustment** | Dynamically penalises abusive clients & rewards clean behaviour |
-| 🔑 **API Key Management** | Generate and revoke named API keys via admin endpoints |
-| 🌐 **IP Fallback** | Anonymous clients are tracked by IP address automatically |
-| 📊 **Live Stats API** | Query real-time token counts, reject ratios, and refill rates per client |
-| 💾 **Redis-backed State** | All per-client state stored in Redis with configurable TTL |
-| 🖥️ **Web Dashboard** | Vanilla JS single-page UI with live charts, burst testing, and log viewer |
-| 🐳 **Docker Ready** | One-command deployment with `docker compose up` |
+| 🪣 **Token Bucket Algorithm** | Classic, high-throughput token bucket algorithm for fine-grained rate limiting |
+| 🧠 **Dynamic Adaptive Throttling** | Calculates rejection ratios each window to penalize abusers and reward clean behavior |
+| 🔑 **API Key Management** | REST endpoints to generate named client API keys and revoke compromised keys |
+| 🌐 **Automatic IP Fallback** | Requests without an API key are automatically identified and isolated by IP |
+| 📊 **Real-Time Client Analytics** | Inspect token balance, current refill rate, reject ratio, and clean window streaks |
+| 💾 **Redis Persistence** | State is stored in Redis hashes with a 24-hour rolling TTL |
+| 🖥️ **Interactive Web Dashboard** | Single-page UI with live charts, burst test simulators, and live request logs |
+| 🐳 **Multi-Platform Deployment** | Run natively on Windows, Linux, macOS, or in Docker containers |
 
 ---
 
-## Architecture
+## Architecture & Request Flow
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -54,9 +66,9 @@ Clients are identified either by their **API Key** (registered clients) or by th
 └─────────────────────────┬────────────────────────────────────┘
                           │
                  ┌────────▼────────┐
-                 │ RateLimitFilter │  Servlet Filter (intercepts all requests)
+                 │ RateLimitFilter │  Servlet Filter (intercepts incoming traffic)
                  └────────┬────────┘
-                          │ identifies client (API Key or IP)
+                          │ Extracts client identifier (API Key or IP)
                  ┌────────▼────────┐
                  │RateLimiterService│ isAllowed(clientId)?
                  └────────┬────────┘
@@ -73,28 +85,24 @@ Clients are identified either by their **API Key** (registered clients) or by th
  └────────────┘  └──────────────┘  └──────────────────┘
 ```
 
-**Request Flow:**
-1. Every incoming request hits `RateLimitFilter`.
-2. The filter resolves a `clientId` (API key if valid, else IP).
-3. `RateLimiterService` initialises the client in Redis on first visit.
-4. `TokenBucket.tryConsume()` refills tokens based on elapsed time and current refill rate.
-5. At the end of each **time window**, `AdaptiveMetrics.evaluate()` calculates a new refill rate:
-   - **Penalty:** If `rejectedRequests / totalRequests > 0%`, the refill rate is reduced.
-   - **Recovery:** After N consecutive clean windows, the rate is restored towards the base.
-6. Blocked requests receive HTTP `429 Too Many Requests`.
+1. **Interception**: Every HTTP request passes through `RateLimitFilter`.
+2. **Identification**: The filter checks for `X-API-Key`. If present and valid, it uses the key; otherwise, it falls back to the client's IP.
+3. **Bucket Check**: `TokenBucket.tryConsume()` computes elapsed time, refills tokens up to `capacity`, and checks if at least 1 token is available.
+4. **Adaptive Check**: `AdaptiveMetrics.evaluate()` evaluates request counts in 60-second windows:
+   - If requests were rejected, `refillRate` is decreased proportionally.
+   - If 5 consecutive clean windows pass, `refillRate` recovers by 10% towards `baseRefillRate`.
+5. **Enforcement**: If allowed, the request proceeds (HTTP 200). If depleted, HTTP `429 Too Many Requests` is returned with rate limit headers.
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| **Backend** | Java 17, Spring Boot 3.5, Spring Web, Spring Data Redis |
-| **Rate Limiting** | Token Bucket + Custom Adaptive Metrics Engine |
-| **Storage** | Redis (via Docker or local install) |
-| **Frontend** | Vanilla HTML5, CSS3, JavaScript (ES2022), Chart.js |
-| **Build** | Maven (with Maven Wrapper) |
-| **Containerisation** | Docker, Docker Compose |
+- **Backend Framework:** Spring Boot 3.5.14
+- **Language / Runtime:** Java 25 (OpenJDK 25.0.2)
+- **Data Store / Cache:** Redis 5+ (via Spring Data Redis & Lettuce)
+- **Build System:** Apache Maven 3.9+ (Maven Wrapper included)
+- **Frontend:** Vanilla HTML5, CSS3, ES2022 JavaScript, Chart.js
+- **Containerization:** Docker & Docker Compose
 
 ---
 
@@ -103,208 +111,296 @@ Clients are identified either by their **API Key** (registered clients) or by th
 ```
 RG_API/
 ├── src/
-│   └── main/
-│       ├── java/com/Project/Adaptive/API/Rate/Limiter/
-│       │   ├── AdaptiveApiRateLimiterApplication.java   # Spring Boot entry point
-│       │   ├── Config/                                  # CORS & Filter configuration
-│       │   ├── Controller/
-│       │   │   ├── AdminController.java                 # Admin API (stats, key gen/revoke)
-│       │   │   └── TestController.java                  # Public test endpoint (/api/hello)
-│       │   ├── Filter/
-│       │   │   └── RateLimitFilter.java                 # Servlet filter — core gate
-│       │   ├── Limiter/
-│       │   │   ├── TokenBucket.java                     # Token bucket implementation
-│       │   │   └── AdaptiveMetrics.java                 # Penalty / recovery logic
-│       │   ├── Model/
-│       │   │   └── RatelimitStats.java                  # Stats data model
-│       │   ├── Repository/
-│       │   │   ├── RateLimiterRepository.java           # Redis ops for rate limiting
-│       │   │   └── ApiKeyRepository.java                # Redis ops for API keys
-│       │   ├── Service/
-│       │   │   ├── RateLimiterService.java              # Business logic layer
-│       │   │   └── ApiKeyService.java                   # API key lifecycle management
-│       │   └── dto/                                     # Response DTOs
-│       └── resources/
-│           └── application.properties                   # Configuration
-├── index.html                                           # Web dashboard (SPA)
-├── style.css                                            # Dashboard styles
-├── app.js                                               # Dashboard JavaScript
-├── Dockerfile                                           # Multi-stage Docker build
-├── docker-compose.yml                                   # App + Redis orchestration
-├── setup.sh                                             # One-click Ubuntu setup script
-└── pom.xml                                              # Maven project descriptor
+│   ├── main/
+│   │   ├── java/com/Project/Adaptive/API/Rate/Limiter/
+│   │   │   ├── AdaptiveApiRateLimiterApplication.java   # Spring Boot Application Entry Point
+│   │   │   ├── Config/
+│   │   │   │   ├── FilterConfig.java                    # Filter registration & order
+│   │   │   │   └── RedisConfig.java                     # RedisTemplate configuration
+│   │   │   ├── Controller/
+│   │   │   │   ├── AdminController.java                 # /admin endpoints (stats, key gen/revoke)
+│   │   │   │   └── TestController.java                  # /api/hello test endpoint
+│   │   │   ├── Filter/
+│   │   │   │   └── RateLimitFilter.java                 # Servlet Filter for request gating
+│   │   │   ├── Limiter/
+│   │   │   │   ├── TokenBucket.java                     # Core token bucket logic
+│   │   │   │   └── AdaptiveMetrics.java                 # Adaptive penalty/recovery algorithm
+│   │   │   ├── Model/
+│   │   │   │   └── RatelimitStats.java                  # Rate limit stats model
+│   │   │   ├── Repository/
+│   │   │   │   ├── ApiKeyRepository.java                # Redis operations for API keys
+│   │   │   │   └── RateLimiterRepository.java           # Redis operations for rate limiting
+│   │   │   ├── Service/
+│   │   │   │   ├── ApiKeyService.java                   # API Key service layer
+│   │   │   │   └── RateLimiterService.java              # Main rate limiting coordinator
+│   │   │   └── dto/                                     # Data Transfer Objects
+│   │   └── resources/
+│   │       ├── application.properties                   # System configuration
+│   │       └── static/                                  # Web Dashboard static assets
+│   │           ├── index.html                           # Single Page Application
+│   │           ├── style.css                            # Dashboard styling
+│   │           └── app.js                               # Dashboard client logic & charts
+│   └── test/                                            # Unit & integration tests
+├── Dockerfile                                           # Container image specification
+├── docker-compose.yml                                   # Docker orchestration (App + Redis)
+├── mvnw / mvnw.cmd                                      # Maven Wrapper executables
+└── pom.xml                                              # Maven build and dependencies
 ```
 
 ---
 
 ## How It Works
 
-### Token Bucket
+### Token Bucket Algorithm
 
-Each client has a **token bucket** in Redis with:
-- `tokens` — current available tokens
-- `capacity` — maximum tokens (default: `10`)
-- `refillRate` — tokens added per second (starts at `2.0`, adapts over time)
-- `baseRefillRate` — the original healthy rate (used as recovery ceiling)
+Each client possesses a separate bucket stored in Redis:
+- **`capacity`**: Maximum burst capacity (default: `10` tokens).
+- **`refillRate`**: Speed of token regeneration (default: `2.0` tokens/sec).
+- **`baseRefillRate`**: The initial baseline refill rate used as the upper bound for recovery.
 
-On each request, elapsed seconds since the last refill are calculated, tokens are topped up, and one token is consumed. If no token is available, HTTP 429 is returned.
+### Adaptive Mechanics (Penalty & Recovery)
 
-### Adaptive Mechanics
+Every **60 seconds** (`rate.limiter.window-duration`), the system checks the client's behaviour:
 
-Every **60-second window**, the system evaluates behaviour:
+$$\text{rejectRatio} = \frac{\text{rejectedRequest}}{\text{totalRequest}}$$
 
-```
-rejectRatio = rejectedRequests / totalRequests
+- **Penalty Phase (Abuse Detected)**:
+  If $\text{rejectRatio} > 0$, the client was throttled during the window. The refill rate is slashed:
+  $$\text{newRefillRate} = \max(\text{floor}, \text{currentRate} \times (1 - \text{rejectRatio}))$$
+  *(Refill rate cannot fall below the floor, which defaults to 10% of base rate).*
 
-if rejectRatio > 0%:
-    newRefillRate = max(floor, currentRate × (1 - rejectRatio))   ← PENALTY
-else if cleanWindowCount >= cleanWindowsRequired (5):
-    newRefillRate = min(baseRate, currentRate × recoveryFactor)    ← RECOVERY
-```
-
-- **Penalty** kicks in immediately on any abuse.
-- **Recovery** requires 5 consecutive clean windows before rate is restored.
-- The rate can never drop below `10%` of the base rate (`floor-percent`).
+- **Recovery Phase (Good Behaviour)**:
+  If a client has 0 rejections across 5 consecutive windows (`rate.limiter.clean-windows-required`):
+  $$\text{newRefillRate} = \min(\text{baseRate}, \text{currentRate} \times 1.10)$$
+  *(Increases by 10% per clean window until reaching base rate).*
 
 ---
 
-## API Endpoints
-
-### Public
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/hello` | Health-check / test endpoint. Rate-limited. |
-
-### Admin
-
-| Method | Endpoint | Query Params | Description |
-|---|---|---|---|
-| `POST` | `/admin/generate-key` | `clientName` | Generate a named API key |
-| `DELETE` | `/admin/revoke-key` | `apiKey` | Revoke an existing API key |
-| `GET` | `/admin/stats` | `clientId` | Fetch live rate-limit stats for a client |
-
-#### Example: Generate API Key
-```bash
-curl -X POST "http://localhost:8080/admin/generate-key?clientName=my-service"
-```
-```json
-{
-  "clientName": "my-service",
-  "apiKey": "a1b2c3d4-...",
-  "message": "API Key generated successfully"
-}
-```
-
-#### Example: Check Stats
-```bash
-curl "http://localhost:8080/admin/stats?clientId=<apiKey>"
-```
-```json
-{
-  "clientId": "a1b2c3d4-...",
-  "liveTokens": 8.4,
-  "refillRate": 1.6,
-  "baseRefillRate": 2.0,
-  "totalRequest": 42,
-  "rejectedRequest": 5,
-  "cleanWindowCount": 0,
-  "checkedAt": "..."
-}
-```
-
-#### Example: Make a Rate-Limited Request
-```bash
-curl -H "X-API-Key: a1b2c3d4-..." http://localhost:8080/api/hello
-```
-
----
-
-## Configuration
-
-All parameters are set in `src/main/resources/application.properties`:
-
-| Property | Default | Description |
-|---|---|---|
-| `rate.limiter.capacity` | `10` | Max tokens per bucket |
-| `rate.limiter.refill-rate` | `2.0` | Tokens refilled per second (base rate) |
-| `rate.limiter.window-duration` | `60000` | Evaluation window in milliseconds (60s) |
-| `rate.limiter.clean-windows-required` | `5` | Clean windows needed before recovery |
-| `rate.limiter.recovery-factor` | `1.1` | Multiplier applied on recovery (10% boost) |
-| `rate.limiter.floor-percent` | `0.10` | Minimum rate as a fraction of base (10%) |
-| `rate.limiter.ttl.hours` | `24` | Redis key TTL in hours |
-| `spring.data.redis.host` | `localhost` | Redis host (overridden by env var in Docker) |
-| `spring.data.redis.port` | `6379` | Redis port |
-
----
-
-## Getting Started
+## How to Run This Project
 
 ### Prerequisites
 
-- **Docker & Docker Compose** — for the recommended setup
-- **Java 17+** and **Maven 3.9+** — for local development
-- A running **Redis** instance — if running locally without Docker
+1. **Java 25**: Download and install OpenJDK 25.
+2. **Redis**: Redis server running on port `6379`.
+3. **Maven**: Included via `./mvnw` / `.\mvnw.cmd` (no manual Maven install required).
 
 ---
 
-### Run with Docker (Recommended)
+### Method 1: Run Locally on Windows (Current Setup)
 
-The easiest way to get the full stack running (app + Redis):
-
-```bash
-# Clone the repository
-git clone https://github.com/RajaGanapathi-M/Adaptive-API-Rate-Limiter-For-API-Abuse-Prevention-Based-On-User-Behaviour.git
-cd Adaptive-API-Rate-Limiter-For-API-Abuse-Prevention-Based-On-User-Behaviour
-
-# Build and start both services
-docker compose up --build
+#### Step 1: Start Redis
+Run the standalone Redis server on Windows:
+```powershell
+# From the redis directory (e.g. C:\Users\raja2\redis):
+C:\Users\raja2\redis\redis-server.exe C:\Users\raja2\redis\redis.windows.conf
+```
+*Verify Redis is running:*
+```powershell
+C:\Users\raja2\redis\redis-cli.exe ping
+# Expected output: PONG
 ```
 
-The app will be available at **http://localhost:8080**.
+#### Step 2: Set JAVA_HOME and Start Spring Boot
+Open a PowerShell prompt in the `RG_API` folder:
+```powershell
+cd "c:\Users\raja2\Desktop\API Rate Limiter Folder\RG_API"
 
-> **Ubuntu/Debian one-liner:** `chmod +x setup.sh && ./setup.sh`
-> This installs Docker, starts it, and runs `docker compose up --build -d` automatically.
+# Point JAVA_HOME to JDK 25:
+$env:JAVA_HOME = "C:\Users\raja2\.jdks\openjdk-25.0.2"
+
+# Start the Spring Boot application:
+.\mvnw.cmd spring-boot:run
+```
+
+Once you see:
+```text
+Tomcat started on port 8080 (http) with context path '/'
+Started AdaptiveApiRateLimiterApplication in ... seconds
+```
+The application and dashboard are ready!
+
+#### Step 3: Open the Dashboard
+Open your web browser and navigate to:
+👉 **[http://localhost:8080](http://localhost:8080)**
 
 ---
 
-### Run Locally
+### Method 2: Run Locally on Linux / macOS
 
+#### Step 1: Start Redis
 ```bash
-# 1. Start Redis (ensure it's running on localhost:6379)
-#    Using Docker just for Redis:
-docker run -d -p 6379:6379 redis:latest
+# Ubuntu / Debian
+sudo systemctl start redis-server
 
-# 2. Build and run the Spring Boot app
+# macOS (Homebrew)
+brew services start redis
+```
+
+#### Step 2: Launch Spring Boot
+```bash
+cd RG_API
+export JAVA_HOME=/path/to/jdk-25
 ./mvnw spring-boot:run
 ```
 
-The app starts on **http://localhost:8080**.
+#### Step 3: Access Dashboard
+Navigate to `http://localhost:8080` in your browser.
 
-Open `index.html` directly in your browser **or** serve it from the backend's static path for the dashboard UI.
+---
+
+### Method 3: Run with Docker Compose
+
+If you have Docker Desktop running:
+
+```bash
+cd RG_API
+docker compose up --build -d
+```
+
+This starts:
+- Redis container on port `6379`
+- Spring Boot container on port `8080`
+
+To stop:
+```bash
+docker compose down
+```
 
 ---
 
 ## Web Dashboard
 
-The project includes a fully featured single-page dashboard at `index.html`:
+The built-in single-page application is served at `http://localhost:8080` and provides:
 
-| Section | What it does |
-|---|---|
-| **Overview** | Server connection status and session counters (requests / success / blocked) |
-| **Request Tester** | Send single or burst requests (up to 25) to any endpoint with custom headers |
-| **Key Manager** | Generate a named API key and instantly use it in subsequent requests |
-| **Revoke Key** | Revoke any API key by value |
-| **Stats Viewer** | Look up live token count, refill rate, reject ratio, and clean windows for any client |
-| **Activity Log** | Timestamped log of every request with colour-coded status |
-| **Charts** | Live session chart (success vs. 429s) and token history chart per client |
-
----
-
-## License
-
-This project is built as an academic final-year project. Feel free to fork, study, and adapt.
+1. **System Health & Counters**: Live status indicator, total requests sent, allowed count, and blocked (429) count.
+2. **Request Simulator**:
+   - Send single requests.
+   - Send burst test batches (5, 10, 15, or 25 concurrent requests) to observe rate-limiting in action.
+   - Toggle between anonymous IP rate limiting or authenticated API Key rate limiting.
+3. **API Key Generator & Revoker**: Create named API keys and revoke keys with one click.
+4. **Live Metric Charts**: Real-time Chart.js visualizer showing token levels, refill rates, and pass/block ratios over time.
+5. **Real-time Activity Log**: Color-coded HTTP status codes and timestamps for all client requests.
 
 ---
 
-> Built with ☕ and Spring Boot by **Raja Ganapathi M**
+## API Endpoints & Testing
+
+### 1. Public Rate-Limited Endpoint
+- **URL:** `GET /api/hello`
+- **Headers (Optional):** `X-API-Key: <your-api-key>`
+- **Sample Request:**
+  ```powershell
+  # Anonymous (tracked by IP):
+  Invoke-RestMethod -Uri "http://localhost:8080/api/hello"
+
+  # Authenticated with API Key:
+  Invoke-RestMethod -Uri "http://localhost:8080/api/hello" -Headers @{"X-API-Key"="<api-key>"}
+  ```
+- **Responses:**
+  - `200 OK`: `"Hello, Your Request Passed Down the Rate Limiter"`
+  - `429 Too Many Requests`:
+    ```json
+    {
+      "status": 429,
+      "message": "Too Many Requests - Rate limit exceeded. Try again later."
+    }
+    ```
+
+---
+
+### 2. Generate API Key
+- **URL:** `POST /admin/generate-key?clientName={name}`
+- **Sample Request:**
+  ```powershell
+  Invoke-RestMethod -Uri "http://localhost:8080/admin/generate-key?clientName=mobile-app" -Method POST
+  ```
+- **Sample Response:**
+  ```json
+  {
+    "clientName": "mobile-app",
+    "apiKey": "rl-75feb2e5-1357-4300-9902-684a8ae6a3fd",
+    "message": "API Key generated successfully"
+  }
+  ```
+
+---
+
+### 3. Fetch Live Stats
+- **URL:** `GET /admin/stats?clientId={clientId}`
+- **Sample Request:**
+  ```powershell
+  Invoke-RestMethod -Uri "http://localhost:8080/admin/stats?clientId=rl-75feb2e5-1357-4300-9902-684a8ae6a3fd"
+  ```
+- **Sample Response:**
+  ```json
+  {
+    "clientId": "rl-75feb2e5-1357-4300-9902-684a8ae6a3fd",
+    "liveTokens": 9.5,
+    "refillRate": 2.0,
+    "baseRefillRate": 2.0,
+    "cleanWindowCount": 0,
+    "totalRequest": 1,
+    "rejectedRequest": 0,
+    "lastRefillTime": "28-09-2026 10:35:52",
+    "windowStartTime": "28-09-2026 10:35:52",
+    "checkedAt": "28-09-2026 10:36:04"
+  }
+  ```
+
+---
+
+### 4. Revoke API Key
+- **URL:** `DELETE /admin/revoke-key?apiKey={apiKey}`
+- **Sample Request:**
+  ```powershell
+  Invoke-RestMethod -Uri "http://localhost:8080/admin/revoke-key?apiKey=rl-75feb2e5-1357-4300-9902-684a8ae6a3fd" -Method DELETE
+  ```
+
+---
+
+## Configuration Reference
+
+Defined in `src/main/resources/application.properties`:
+
+| Property | Default Value | Description |
+|---|---|---|
+| `rate.limiter.capacity` | `10` | Maximum token bucket capacity |
+| `rate.limiter.refill-rate` | `2.0` | Initial tokens replenished per second |
+| `rate.limiter.window-duration` | `60000` | Evaluation window in milliseconds (60 seconds) |
+| `rate.limiter.clean-windows-required` | `5` | Consecutive clean windows required to begin rate recovery |
+| `rate.limiter.recovery-factor` | `1.1` | Multiplier for refill rate increase on recovery (10% boost) |
+| `rate.limiter.floor-percent` | `0.10` | Minimum allowed refill rate as a fraction of base rate (10%) |
+| `rate.limiter.ttl.hours` | `24` | Expiration time for client records in Redis |
+| `spring.data.redis.host` | `localhost` | Redis server hostname |
+| `spring.data.redis.port` | `6379` | Redis server port |
+
+---
+
+## Troubleshooting & FAQ
+
+### 1. `Unable to connect to Redis on localhost:6379`
+- Ensure Redis is running:
+  - Run `redis-cli ping` (should output `PONG`).
+  - If not running, start Redis using `C:\Users\raja2\redis\redis-server.exe` (Windows) or `redis-server` (Linux/macOS).
+
+### 2. `The JAVA_HOME environment variable is not defined correctly`
+- Explicitly set `JAVA_HOME` in your shell session before running Maven:
+  ```powershell
+  $env:JAVA_HOME = "C:\Users\raja2\.jdks\openjdk-25.0.2"
+  .\mvnw.cmd spring-boot:run
+  ```
+
+### 3. `Port 8080 is already in use`
+- Find the process using port 8080:
+  ```powershell
+  netstat -ano | findstr 8080
+  ```
+- Terminate the process or configure `server.port=8081` in `application.properties`.
+
+---
+
+## License & Credits
+
+- **Author:** Raja Ganapathi M
+- **Project:** Adaptive Rate Limiter For API Abuse Prevention Based On User Behaviour
+- **License:** Educational / Open Source
